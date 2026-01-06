@@ -1,0 +1,68 @@
+import pandas as pd
+import time
+from sqlalchemy import create_engine, inspect
+from datetime import datetime
+
+# --- CONFIGURATION ---
+SOURCE_URI = "mysql+pymysql://user:pass@localhost:3306/source_db"
+TARGET_URI = "postgresql+psycopg2://user:pass@localhost:5432/target_db"
+
+def run_migration():
+    src_engine = create_engine(SOURCE_URI)
+    tgt_engine = create_engine(TARGET_URI)
+    inspector = inspect(src_engine)
+    
+    tables = inspector.get_table_names()
+    migration_summary = []
+
+    print(f"🚀 Starting Migration: {len(tables)} tables found.\n")
+
+    for table in tables:
+        start_time = time.time()
+        status = "Success"
+        error_msg = ""
+        
+        try:
+            # 1. Extract
+            df = pd.read_sql_table(table, src_engine)
+            src_count = len(df)
+
+            # 2. Load
+            df.to_sql(table, tgt_engine, if_exists='replace', index=False)
+            
+            # 3. Verify (Data Integrity Check)
+            tgt_count = pd.read_sql_query(f"SELECT COUNT(*) FROM {table}", tgt_engine).iloc[0, 0]
+            
+            if src_count != tgt_count:
+                status = "Integrity Failure"
+                error_msg = f"Row mismatch: Source({src_count}) vs Target({tgt_count})"
+
+        except Exception as e:
+            status = "Failed"
+            error_msg = str(e)
+            src_count, tgt_count = 0, 0
+
+        duration = round(time.time() - start_time, 2)
+        
+        # Collect stats for the report
+        migration_summary.append({
+            "Table Name": table,
+            "Status": status,
+            "Source Count": src_count,
+            "Target Count": tgt_count,
+            "Duration (sec)": duration,
+            "Notes": error_msg
+        })
+        print(f"Finished {table}: {status}")
+
+    # Generate Summary Report
+    report_df = pd.DataFrame(migration_summary)
+    report_filename = f"migration_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    report_df.to_csv(report_filename, index=False)
+    
+    return report_filename, report_df
+
+if __name__ == "__main__":
+    report_file, summary = run_migration()
+    print(f"\n✅ Migration Complete. Report saved to: {report_file}")
+    print(summary)
